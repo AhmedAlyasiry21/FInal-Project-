@@ -7,7 +7,7 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# External API URLs from project description
+
 GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"
 WEATHER_URL = "https://api.open-meteo.com/v1/forecast"
 
