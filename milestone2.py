@@ -9,13 +9,13 @@ app = FastAPI(
     version="2.0.0"
 )
 
-# ---------- External API URLs (same as Milestone 1) ----------
+
 
 GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"
 WEATHER_URL = "https://api.open-meteo.com/v1/forecast"
 
 
-# ---------- Pydantic models ----------
+
 
 class ObservationCreate(BaseModel):
     city: str
@@ -38,13 +38,12 @@ class Observation(BaseModel):
     notes: Optional[str] = None
 
 
-# ---------- In-memory "database" ----------
 
 observations: List[dict] = []
 next_id: int = 1
 
 
-# ---------- Helper functions (same logic as Milestone 1) ----------
+
 
 def geocode_city(city: str, country: str):
     params = {"name": city, "country": country, "count": 1}
@@ -77,14 +76,14 @@ def fetch_weather(latitude: float, longitude: float):
     return current_weather
 
 
-# ---------- Health check ----------
+
 
 @app.get("/health")
 def health_check():
     return {"status": "ok", "milestone": 2}
 
 
-# ---------- CREATE: Ingest and save observation ----------
+
 
 @app.post("/ingest", response_model=Observation)
 def ingest(city: str, country: str):
@@ -94,13 +93,13 @@ def ingest(city: str, country: str):
     """
     global next_id
 
-    # 1) Geocode
+  
     lat, lon, resolved_city, resolved_country = geocode_city(city, country)
 
-    # 2) Fetch weather
+  
     cw = fetch_weather(lat, lon)
 
-    # 3) Build observation record
+    
     obs = {
         "id": next_id,
         "city": resolved_city,
@@ -119,7 +118,6 @@ def ingest(city: str, country: str):
     return obs
 
 
-# ---------- READ: Get all observations ----------
 
 @app.get("/observations", response_model=List[Observation])
 def list_observations():
@@ -129,7 +127,7 @@ def list_observations():
     return observations
 
 
-# ---------- READ: Get one observation by ID ----------
+
 
 @app.get("/observations/{obs_id}", response_model=Observation)
 def get_observation(obs_id: int):
@@ -143,7 +141,7 @@ def get_observation(obs_id: int):
     raise HTTPException(status_code=404, detail="Observation not found")
 
 
-# ---------- UPDATE: Update notes field by ID ----------
+
 
 @app.put("/observations/{obs_id}", response_model=Observation)
 def update_observation(obs_id: int, update: ObservationUpdate):
@@ -158,7 +156,7 @@ def update_observation(obs_id: int, update: ObservationUpdate):
     raise HTTPException(status_code=404, detail="Observation not found")
 
 
-# ---------- DELETE: Delete observation by ID ----------
+
 
 @app.delete("/observations/{obs_id}")
 def delete_observation(obs_id: int):
