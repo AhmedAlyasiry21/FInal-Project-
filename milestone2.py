@@ -1,191 +1,173 @@
-#!/usr/bin/env python
-# coding: utf-8
-
-# In[12]:
-
-
-from flask import Flask, request, jsonify
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 import requests
+from typing import Optional, List
 
-app = Flask(__name__)
+app = FastAPI(
+    title="Local Weather Tracker - Milestone 2",
+    description="Milestone 2: In-memory CRUD for weather observations.",
+    version="2.0.0"
+)
 
+# ---------- External API URLs (same as Milestone 1) ----------
 
-# In[13]:
-
-
-# simple in-memory "database"
-observations = []
-next_id = 1
-
-def find_observation(obs_id: int):
-    """Return observation dict or None."""
-    for obs in observations:
-        if obs["id"] == obs_id:
-            return obs
-    return None
+GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"
+WEATHER_URL = "https://api.open-meteo.com/v1/forecast"
 
 
-# In[14]:
+# ---------- Pydantic models ----------
+
+class ObservationCreate(BaseModel):
+    city: str
+    country: str
 
 
-def fetch_observation_from_api(city: str, country: str):
-    """
-    Uses the same flow as Milestone 1:
-      1) Geocoding: city,country -> latitude, longitude (+ normalized city/country)
-      2) Weather: latitude, longitude -> temperature_c, windspeed_kmh, observation_time
-    Returns a dict with the exact field names used in Milestone 1.
-    """
-    # 1) Geocoding
-    geo_url = "https://geocoding-api.open-meteo.com/v1/search"
-    geo_params = {"name": city, "country": country, "count": 1}
-    geo_resp = requests.get(geo_url, params=geo_params, timeout=10)
-    if geo_resp.status_code != 200:
-        raise Exception(f"Geocoding failed: {geo_resp.status_code}")
-    geo = geo_resp.json()
-    if not geo.get("results"):
-        raise Exception("No geocoding results for that city/country")
-
-    g0 = geo["results"][0]
-    city = g0.get("name", city)
-    country = g0.get("country_code") or g0.get("country") or country
-    latitude = float(g0["latitude"])
-    longitude = float(g0["longitude"])
-
-    # 2) Weather
-    weather_url = "https://api.open-meteo.com/v1/forecast"
-    weather_params = {"latitude": latitude, "longitude": longitude, "current_weather": True}
-    w_resp = requests.get(weather_url, params=weather_params, timeout=10)
-    if w_resp.status_code != 200:
-        raise Exception(f"Weather failed: {w_resp.status_code}")
-    current = (w_resp.json()).get("current_weather") or {}
-
-    temperature_c = current.get("temperature")
-    windspeed_kmh = current.get("windspeed")
-    observation_time = current.get("time")
-    if temperature_c is None or windspeed_kmh is None or observation_time is None:
-        raise Exception("Missing fields in weather response")
-
-    return {
-        "city": city,
-        "country": str(country),
-        "latitude": latitude,
-        "longitude": longitude,
-        "temperature_c": float(temperature_c),
-        "windspeed_kmh": float(windspeed_kmh),
-        "observation_time": observation_time,
-    }
+class ObservationUpdate(BaseModel):
+    notes: str
 
 
-# In[15]:
+class Observation(BaseModel):
+    id: int
+    city: str
+    country: str
+    latitude: float
+    longitude: float
+    temperature_c: float
+    windspeed_kmh: float
+    observation_time: str
+    notes: Optional[str] = None
 
 
-# ---- Home (clickable) ----
-@app.route("/", methods=["GET"])
-def home():
-    # simple page with links + a POST form so you can click and see results
+# ---------- In-memory "database" ----------
+
+observations: List[dict] = []
+next_id: int = 1
+
+
+# ---------- Helper functions (same logic as Milestone 1) ----------
+
+def geocode_city(city: str, country: str):
+    params = {"name": city, "country": country, "count": 1}
+    response = requests.get(GEOCODE_URL, params=params)
+    response.raise_for_status()
+    data = response.json()
+
+    if "results" not in data or not data["results"]:
+        raise HTTPException(status_code=404, detail="City not found")
+
+    first = data["results"][0]
     return (
-        "<h2>Local Weather Tracker — Milestone 2</h2>"
-        "<p>This server is in sync with Milestone 1. Use the links and form below.</p>"
-        "<h3>Read</h3>"
-        "<ul>"
-        "<li><a href='/observations'>GET /observations</a></li>"
-        "<li>After creating one: <code>/observations/1</code> etc.</li>"
-        "</ul>"
-        "<h3>Create (POST /ingest)</h3>"
-        "<form method='post' action='/ingest'>"
-        "City: <input name='city' value='Chicago'/> "
-        "Country: <input name='country' value='US'/> "
-        "<button type='submit'>Create</button>"
-        "</form>"
-        "<p><em>Tip:</em> The form sends POST so you can create by clicking.</p>"
+        first["latitude"],
+        first["longitude"],
+        first["name"],
+        first["country"]
     )
 
-# ---- CREATE (uses Milestone 1 logic) ----
-@app.route("/ingest", methods=["POST"])
-def create_observation():
+
+def fetch_weather(latitude: float, longitude: float):
+    params = {"latitude": latitude, "longitude": longitude, "current_weather": True}
+    response = requests.get(WEATHER_URL, params=params)
+    response.raise_for_status()
+    data = response.json()
+    current_weather = data.get("current_weather")
+
+    if not current_weather:
+        raise HTTPException(status_code=500, detail="No current weather returned")
+
+    return current_weather
+
+
+# ---------- Health check ----------
+
+@app.get("/health")
+def health_check():
+    return {"status": "ok", "milestone": 2}
+
+
+# ---------- CREATE: Ingest and save observation ----------
+
+@app.post("/ingest", response_model=Observation)
+def ingest(city: str, country: str):
     """
-    Accepts city/country via either query string or form fields.
-    Fills ALL fields using Milestone 1 (Open-Meteo) logic.
+    Fetch live weather, save it to in-memory list, and return the new observation.
+    This is like the final project's POST /ingest, but using in-memory storage.
     """
     global next_id
 
-    city = (request.args.get("city") or request.form.get("city") or "").strip()
-    country = (request.args.get("country") or request.form.get("country") or "").strip()
-    if not city or not country:
-        return jsonify({"error": "Both 'city' and 'country' are required"}), 400
+    # 1) Geocode
+    lat, lon, resolved_city, resolved_country = geocode_city(city, country)
 
-    try:
-        data = fetch_observation_from_api(city, country)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 502
+    # 2) Fetch weather
+    cw = fetch_weather(lat, lon)
 
+    # 3) Build observation record
     obs = {
         "id": next_id,
-        "city": data["city"],
-        "country": data["country"],
-        "latitude": data["latitude"],
-        "longitude": data["longitude"],
-        "temperature_c": data["temperature_c"],
-        "windspeed_kmh": data["windspeed_kmh"],
-        "observation_time": data["observation_time"],
+        "city": resolved_city,
+        "country": resolved_country,
+        "latitude": lat,
+        "longitude": lon,
+        "temperature_c": cw["temperature"],
+        "windspeed_kmh": cw["windspeed"],
+        "observation_time": cw["time"],
         "notes": None
     }
+
     observations.append(obs)
     next_id += 1
-    return jsonify(obs), 201
 
-# ---- READ: all ----
-@app.route("/observations", methods=["GET"])
+    return obs
+
+
+# ---------- READ: Get all observations ----------
+
+@app.get("/observations", response_model=List[Observation])
 def list_observations():
-    return jsonify(observations), 200
+    """
+    Return all stored observations (from in-memory list).
+    """
+    return observations
 
-# ---- READ: one ----
-@app.route("/observations/<int:obs_id>", methods=["GET"])
+
+# ---------- READ: Get one observation by ID ----------
+
+@app.get("/observations/{obs_id}", response_model=Observation)
 def get_observation(obs_id: int):
-    obs = find_observation(obs_id)
-    if obs:
-        return jsonify(obs), 200
-    return jsonify({"error": "Not found"}), 404
+    """
+    Return a single observation by ID.
+    """
+    for obs in observations:
+        if obs["id"] == obs_id:
+            return obs
 
-# ---- UPDATE: notes only ----
-@app.route("/observations/<int:obs_id>", methods=["PUT"])
-def update_observation(obs_id: int):
-    obs = find_observation(obs_id)
-    if not obs:
-        return jsonify({"error": "Not found"}), 404
-    data = request.get_json(silent=True) or {}
-    if "notes" not in data:
-        return jsonify({"error": "Missing 'notes' in JSON body"}), 400
-    obs["notes"] = data["notes"]
-    return jsonify({"id": obs_id, "notes": obs["notes"]}), 200
+    raise HTTPException(status_code=404, detail="Observation not found")
 
-# ---- DELETE ----
-@app.route("/observations/<int:obs_id>", methods=["DELETE"])
+
+# ---------- UPDATE: Update notes field by ID ----------
+
+@app.put("/observations/{obs_id}", response_model=Observation)
+def update_observation(obs_id: int, update: ObservationUpdate):
+    """
+    Update the 'notes' field of an observation.
+    """
+    for obs in observations:
+        if obs["id"] == obs_id:
+            obs["notes"] = update.notes
+            return obs
+
+    raise HTTPException(status_code=404, detail="Observation not found")
+
+
+# ---------- DELETE: Delete observation by ID ----------
+
+@app.delete("/observations/{obs_id}")
 def delete_observation(obs_id: int):
-    global observations
-    if not find_observation(obs_id):
-        return jsonify({"error": "Not found"}), 404
-    observations = [o for o in observations if o["id"] != obs_id]
-    return jsonify({"deleted": obs_id}), 200
+    """
+    Delete an observation by ID.
+    """
+    for index, obs in enumerate(observations):
+        if obs["id"] == obs_id:
+            observations.pop(index)
+            return {"deleted": obs_id}
 
-# (optional) quick reset for testing
-@app.route("/_reset", methods=["POST"])
-def _reset():
-    global observations, next_id
-    observations = []
-    next_id = 1
-    return {"ok": True, "next_id": next_id}
-
-
-# In[16]:
-
-
-print("Flask server running on http://127.0.0.1:5000")
-app.run(host="127.0.0.1", port=5000, debug=True, use_reloader=False)
-
-
-# In[ ]:
-
-
-
-
+    raise HTTPException(status_code=404, detail="Observation not found")
