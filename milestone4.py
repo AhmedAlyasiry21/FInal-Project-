@@ -182,3 +182,7 @@ def delete_observation(obs_id: int):
                 return {"deleted": row["id"]}
     finally:
         conn.close()
+
+@app.get("/")
+def root():
+    return {"message": "Local Weather Tracker API. Open /docs for the full interface."}
